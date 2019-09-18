@@ -9,10 +9,8 @@ import { log } from '../log'
 import { openDirectorySafe } from '../shell'
 import { enableRebaseDialog, enableStashing } from '../../lib/feature-flag'
 import { MenuLabelsEvent } from '../../models/menu-labels'
+import { DefaultEditorLabel } from '../../ui/lib/context-menu'
 
-const defaultEditorLabel = __DARWIN__
-  ? 'Open in External Editor'
-  : 'Open in external editor'
 const defaultShellLabel = __DARWIN__
   ? 'Open in Terminal'
   : 'Open in Command Prompt'
@@ -57,7 +55,7 @@ export function buildDefaultMenu({
 
   const editorLabel =
     selectedExternalEditor === null
-      ? defaultEditorLabel
+      ? DefaultEditorLabel
       : `Open in ${selectedExternalEditor}`
 
   const template = new Array<Electron.MenuItemConstructorOptions>()
@@ -160,6 +158,13 @@ export function buildDefaultMenu({
         label: __DARWIN__ ? 'Select All' : 'Select &all',
         accelerator: 'CmdOrCtrl+A',
         click: emit('select-all'),
+      },
+      separator,
+      {
+        id: 'find',
+        label: __DARWIN__ ? 'Find' : '&Find',
+        accelerator: 'CmdOrCtrl+F',
+        click: emit('find-text'),
       },
     ],
   })
@@ -286,7 +291,7 @@ export function buildDefaultMenu({
       {
         label: removeRepoLabel,
         id: 'remove-repository',
-        accelerator: 'CmdOrCtrl+Delete',
+        accelerator: 'CmdOrCtrl+Backspace',
         click: emit('remove-repository'),
       },
       separator,
@@ -353,6 +358,7 @@ export function buildDefaultMenu({
       {
         label: __DARWIN__ ? 'Discard All Changes…' : 'Discard all changes…',
         id: 'discard-all-changes',
+        accelerator: 'CmdOrCtrl+Shift+Backspace',
         click: emit('discard-all-changes'),
       },
       separator,
@@ -497,6 +503,10 @@ export function buildDefaultMenu({
             click: emit('show-release-notes-popup'),
           },
         ],
+      },
+      {
+        label: 'Prune branches',
+        click: emit('test-prune-branches'),
       }
     )
   }
@@ -601,29 +611,27 @@ function zoom(direction: ZoomDirection): ClickHandler {
       webContents.setZoomFactor(1)
       webContents.send('zoom-factor-changed', 1)
     } else {
-      webContents.getZoomFactor(rawZoom => {
-        const zoomFactors =
-          direction === ZoomDirection.In ? ZoomInFactors : ZoomOutFactors
+      const rawZoom = webContents.getZoomFactor()
+      const zoomFactors =
+        direction === ZoomDirection.In ? ZoomInFactors : ZoomOutFactors
 
-        // So the values that we get from getZoomFactor are floating point
-        // precision numbers from chromium that don't always round nicely so
-        // we'll have to do a little trick to figure out which of our supported
-        // zoom factors the value is referring to.
-        const currentZoom = findClosestValue(zoomFactors, rawZoom)
+      // So the values that we get from getZoomFactor are floating point
+      // precision numbers from chromium that don't always round nicely so
+      // we'll have to do a little trick to figure out which of our supported
+      // zoom factors the value is referring to.
+      const currentZoom = findClosestValue(zoomFactors, rawZoom)
 
-        const nextZoomLevel = zoomFactors.find(f =>
-          direction === ZoomDirection.In ? f > currentZoom : f < currentZoom
-        )
+      const nextZoomLevel = zoomFactors.find(f =>
+        direction === ZoomDirection.In ? f > currentZoom : f < currentZoom
+      )
 
-        // If we couldn't find a zoom level (likely due to manual manipulation
-        // of the zoom factor in devtools) we'll just snap to the closest valid
-        // factor we've got.
-        const newZoom =
-          nextZoomLevel === undefined ? currentZoom : nextZoomLevel
+      // If we couldn't find a zoom level (likely due to manual manipulation
+      // of the zoom factor in devtools) we'll just snap to the closest valid
+      // factor we've got.
+      const newZoom = nextZoomLevel === undefined ? currentZoom : nextZoomLevel
 
-        webContents.setZoomFactor(newZoom)
-        webContents.send('zoom-factor-changed', newZoom)
-      })
+      webContents.setZoomFactor(newZoom)
+      webContents.send('zoom-factor-changed', newZoom)
     }
   }
 }

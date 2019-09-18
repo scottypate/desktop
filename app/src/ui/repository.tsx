@@ -41,6 +41,7 @@ interface IRepositoryViewProps {
   readonly gitHubUserStore: GitHubUserStore
   readonly onViewCommitOnGitHub: (SHA: string) => void
   readonly imageDiffType: ImageDiffType
+  readonly hideWhitespaceInDiff: boolean
   readonly askForConfirmationOnDiscardChanges: boolean
   readonly focusCommitMessage: boolean
   readonly accounts: ReadonlyArray<Account>
@@ -301,6 +302,7 @@ export class RepositoryView extends React.Component<
             isExternalEditorAvailable={
               this.props.externalEditorLabel !== undefined
             }
+            dispatcher={this.props.dispatcher}
           />
         )
       } else {
@@ -320,7 +322,9 @@ export class RepositoryView extends React.Component<
             dispatcher={this.props.dispatcher}
             file={selectedFile}
             diff={diff}
+            isCommitting={this.props.state.isCommitting}
             imageDiffType={this.props.imageDiffType}
+            hideWhitespaceInDiff={this.props.hideWhitespaceInDiff}
           />
         )
       }
@@ -348,6 +352,7 @@ export class RepositoryView extends React.Component<
           selectedDiffType={this.props.imageDiffType}
           externalEditorLabel={this.props.externalEditorLabel}
           onOpenInExternalEditor={this.props.onOpenInExternalEditor}
+          hideWhitespaceInDiff={this.props.hideWhitespaceInDiff}
         />
       )
     } else {

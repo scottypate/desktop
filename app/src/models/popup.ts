@@ -8,6 +8,7 @@ import { WorkingDirectoryFileChange } from './status'
 import { PreferencesTab } from './preferences'
 import { ICommitContext } from './commit'
 import { IStashEntry } from './stash-entry'
+import { Account } from '../models/account'
 
 export enum PopupType {
   RenameBranch = 1,
@@ -49,6 +50,7 @@ export enum PopupType {
   StashAndSwitchBranch,
   ConfirmOverwriteStash,
   ConfirmDiscardStash,
+  CreateTutorialRepository,
 }
 
 export type Popup =
@@ -82,6 +84,13 @@ export type Popup =
   | {
       type: PopupType.CreateBranch
       repository: Repository
+
+      /**
+       * A flag to indicate the user clicked the "switch branch" link when they
+       * saw the prompt about the current branch being protected.
+       */
+      handleProtectedBranchWarning?: boolean
+
       initialName?: string
     }
   | { type: PopupType.SignIn }
@@ -187,4 +196,8 @@ export type Popup =
       type: PopupType.ConfirmDiscardStash
       repository: Repository
       stash: IStashEntry
+    }
+  | {
+      type: PopupType.CreateTutorialRepository
+      account: Account
     }

@@ -17,7 +17,7 @@ import { updateStore, UpdateStatus } from './lib/update-store'
 import { RetryAction } from '../models/retry-actions'
 import { shouldRenderApplicationMenu } from './lib/features'
 import { matchExistingRepository } from '../lib/repository-matching'
-import { getDotComAPIEndpoint } from '../lib/api'
+import { getDotComAPIEndpoint, IAPIRepository } from '../lib/api'
 import { ILaunchStats, SamplesURL } from '../lib/stats'
 import { getVersion, getName } from './lib/app-proxy'
 import { getOS } from '../lib/get-os'
@@ -103,6 +103,8 @@ import { BannerType } from '../models/banner'
 import { StashAndSwitchBranch } from './stash-changes/stash-and-switch-branch-dialog'
 import { OverwriteStash } from './stash-changes/overwrite-stashed-changes-dialog'
 import { ConfirmDiscardStashDialog } from './stashing/confirm-discard-stash'
+import { CreateTutorialRepositoryDialog } from './blank-slate/create-tutorial-repository-dialog'
+import { enableTutorial } from '../lib/feature-flag'
 
 const MinuteInMilliseconds = 1000 * 60
 const HourInMilliseconds = MinuteInMilliseconds * 60
@@ -324,21 +326,17 @@ export class App extends React.Component<IAppProps, IAppState> {
         return this.props.dispatcher.showPopup({ type: PopupType.Preferences })
       case 'open-working-directory':
         return this.openCurrentRepositoryWorkingDirectory()
-      case 'update-branch': {
+      case 'update-branch':
         this.props.dispatcher.recordMenuInitiatedUpdate()
         return this.updateBranch()
-      }
-      case 'compare-to-branch': {
+      case 'compare-to-branch':
         return this.showHistory(true)
-      }
-      case 'merge-branch': {
+      case 'merge-branch':
         this.props.dispatcher.recordMenuInitiatedMerge()
         return this.mergeBranch()
-      }
-      case 'rebase-branch': {
+      case 'rebase-branch':
         this.props.dispatcher.recordMenuInitiatedRebase()
         return this.showRebaseDialog()
-      }
       case 'show-repository-settings':
         return this.showRepositorySettings()
       case 'view-repository-on-github':
@@ -355,9 +353,8 @@ export class App extends React.Component<IAppProps, IAppState> {
         return this.boomtown()
       case 'go-to-commit-message':
         return this.goToCommitMessage()
-      case 'open-pull-request': {
+      case 'open-pull-request':
         return this.openPullRequest()
-      }
       case 'install-cli':
         return this.props.dispatcher.installCLI()
       case 'open-external-editor':
@@ -370,6 +367,10 @@ export class App extends React.Component<IAppProps, IAppState> {
         return this.showStashedChanges()
       case 'hide-stashed-changes':
         return this.hideStashedChanges()
+      case 'test-prune-branches':
+        return this.testPruneBranches()
+      case 'find-text':
+        return this.findText()
     }
 
     return assertNever(name, `Unknown menu event name: ${name}`)
@@ -430,6 +431,14 @@ export class App extends React.Component<IAppProps, IAppState> {
     }
   }
 
+  private testPruneBranches() {
+    if (!__DEV__) {
+      return
+    }
+
+    this.props.appStore._testPruneBranches()
+  }
+
   /**
    * Handler for the 'select-all' menu event, dispatches
    * a custom DOM event originating from the element which
@@ -448,6 +457,28 @@ export class App extends React.Component<IAppProps, IAppState> {
       document.activeElement.dispatchEvent(event)
     ) {
       remote.getCurrentWebContents().selectAll()
+    }
+  }
+
+  /**
+   * Handler for the 'find-text' menu event, dispatches
+   * a custom DOM event originating from the element which
+   * currently has keyboard focus (or the document if no element
+   * has focus). Components have a chance to intercept this
+   * event and implement their own 'find-text' logic. One
+   * example of this custom event is the text diff which
+   * will trigger a search dialog when seeing this event.
+   */
+  private findText() {
+    const event = new CustomEvent('find-text', {
+      bubbles: true,
+      cancelable: true,
+    })
+
+    if (document.activeElement != null) {
+      document.activeElement.dispatchEvent(event)
+    } else {
+      document.dispatchEvent(event)
     }
   }
 
@@ -478,18 +509,14 @@ export class App extends React.Component<IAppProps, IAppState> {
   }
 
   private getDotComAccount(): Account | null {
-    const state = this.props.appStore.getState()
-    const accounts = state.accounts
-    const dotComAccount = accounts.find(
+    const dotComAccount = this.state.accounts.find(
       a => a.endpoint === getDotComAPIEndpoint()
     )
     return dotComAccount || null
   }
 
   private getEnterpriseAccount(): Account | null {
-    const state = this.props.appStore.getState()
-    const accounts = state.accounts
-    const enterpriseAccount = accounts.find(
+    const enterpriseAccount = this.state.accounts.find(
       a => a.endpoint !== getDotComAPIEndpoint()
     )
     return enterpriseAccount || null
@@ -651,6 +678,23 @@ export class App extends React.Component<IAppProps, IAppState> {
     return this.props.dispatcher.showPopup({
       type: PopupType.CloneRepository,
       initialURL,
+    })
+  }
+
+  private onCreateTutorialRepository = () => {
+    if (!enableTutorial()) {
+      return
+    }
+
+    const account = this.getDotComAccount() || this.getEnterpriseAccount()
+
+    if (account === null) {
+      return
+    }
+
+    this.props.dispatcher.showPopup({
+      type: PopupType.CreateTutorialRepository,
+      account,
     })
   }
 
@@ -1085,11 +1129,6 @@ export class App extends React.Component<IAppProps, IAppState> {
       return null
     }
 
-    // Don't render the menu bar when the blank slate is shown
-    if (this.state.repositories.length < 1) {
-      return null
-    }
-
     const currentFoldout = this.state.currentFoldout
 
     // AppMenuBar requires us to pass a strongly typed AppMenuFoldout state or
@@ -1137,11 +1176,23 @@ export class App extends React.Component<IAppProps, IAppState> {
     }
 
     const showAppIcon = __WIN32__ && !this.state.showWelcomeFlow
+    const inWelcomeFlow = this.state.showWelcomeFlow
+    const inNoRepositoriesView = this.state.repositories.length === 0
+
+    // The light title bar style should only be used while we're in
+    // the welcome flow as well as the no-repositories blank slate
+    // on macOS. The latter case has to do with the application menu
+    // being part of the title bar on Windows. We need to render
+    // the app menu in the no-repositories blank slate on Windows but
+    // the menu doesn't support the light style at the moment so we're
+    // forcing it to use the dark style.
+    const titleBarStyle =
+      inWelcomeFlow || (__DARWIN__ && inNoRepositoriesView) ? 'light' : 'dark'
 
     return (
       <TitleBar
         showAppIcon={showAppIcon}
-        titleBarStyle={this.state.titleBarStyle}
+        titleBarStyle={titleBarStyle}
         windowState={this.state.windowState}
         windowZoomFactor={this.state.windowZoomFactor}
       >
@@ -1250,7 +1301,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             }
             confirmForcePush={this.state.askForConfirmationOnForcePush}
             selectedExternalEditor={this.state.selectedExternalEditor}
-            optOutOfUsageTracking={this.props.appStore.getStatsOptOut()}
+            optOutOfUsageTracking={this.state.optOutOfUsageTracking}
             enterpriseAccount={this.getEnterpriseAccount()}
             onDismissed={this.onPopupDismissed}
             selectedShell={this.state.selectedShell}
@@ -1362,6 +1413,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             onDismissed={this.onPopupDismissed}
             dispatcher={this.props.dispatcher}
             initialName={popup.initialName || ''}
+            handleProtectedBranchWarning={popup.handleProtectedBranchWarning}
           />
         )
       }
@@ -1419,16 +1471,23 @@ export class App extends React.Component<IAppProps, IAppState> {
       case PopupType.RemoveRepository:
         return (
           <ConfirmRemoveRepository
+            key="confirm-remove-repository"
             repository={popup.repository}
             onConfirmation={this.onConfirmRepoRemoval}
             onDismissed={this.onPopupDismissed}
           />
         )
       case PopupType.TermsAndConditions:
-        return <TermsAndConditions onDismissed={this.onPopupDismissed} />
+        return (
+          <TermsAndConditions
+            key="terms-and-conditions"
+            onDismissed={this.onPopupDismissed}
+          />
+        )
       case PopupType.PushBranchCommits:
         return (
           <PushBranchCommits
+            key="push-branch-commits"
             dispatcher={this.props.dispatcher}
             repository={popup.repository}
             branch={popup.branch}
@@ -1438,10 +1497,16 @@ export class App extends React.Component<IAppProps, IAppState> {
           />
         )
       case PopupType.CLIInstalled:
-        return <CLIInstalled onDismissed={this.onPopupDismissed} />
+        return (
+          <CLIInstalled
+            key="cli-installed"
+            onDismissed={this.onPopupDismissed}
+          />
+        )
       case PopupType.GenericGitAuthentication:
         return (
           <GenericGitAuthentication
+            key="generic-git-authentication"
             hostname={popup.hostname}
             onDismiss={this.onPopupDismissed}
             onSave={this.onSaveCredentials}
@@ -1474,6 +1539,7 @@ export class App extends React.Component<IAppProps, IAppState> {
       case PopupType.InitializeLFS:
         return (
           <InitializeLFS
+            key="initialize-lfs"
             repositories={popup.repositories}
             onDismissed={this.onPopupDismissed}
             onInitialize={this.initializeLFS}
@@ -1482,6 +1548,7 @@ export class App extends React.Component<IAppProps, IAppState> {
       case PopupType.LFSAttributeMismatch:
         return (
           <AttributeMismatch
+            key="lsf-attribute-mismatch"
             onDismissed={this.onPopupDismissed}
             onUpdateExistingFilters={this.updateExistingLFSFilters}
           />
@@ -1489,6 +1556,7 @@ export class App extends React.Component<IAppProps, IAppState> {
       case PopupType.UpstreamAlreadyExists:
         return (
           <UpstreamAlreadyExists
+            key="upstream-already-exists"
             repository={popup.repository}
             existingRemote={popup.existingRemote}
             onDismissed={this.onPopupDismissed}
@@ -1499,6 +1567,7 @@ export class App extends React.Component<IAppProps, IAppState> {
       case PopupType.ReleaseNotes:
         return (
           <ReleaseNotes
+            key="release-notes"
             emoji={this.state.emoji}
             newRelease={popup.newRelease}
             onDismissed={this.onPopupDismissed}
@@ -1507,6 +1576,7 @@ export class App extends React.Component<IAppProps, IAppState> {
       case PopupType.DeletePullRequest:
         return (
           <DeletePullRequest
+            key="delete-pull-request"
             dispatcher={this.props.dispatcher}
             repository={popup.repository}
             branch={popup.branch}
@@ -1534,6 +1604,7 @@ export class App extends React.Component<IAppProps, IAppState> {
 
         return (
           <MergeConflictsDialog
+            key="merge-conflicts-dialog"
             dispatcher={this.props.dispatcher}
             repository={popup.repository}
             workingDirectory={workingDirectory}
@@ -1550,6 +1621,7 @@ export class App extends React.Component<IAppProps, IAppState> {
       case PopupType.OversizedFiles:
         return (
           <OversizedFiles
+            key="oversized-files"
             oversizedFiles={popup.oversizedFiles}
             onDismissed={this.onPopupDismissed}
             dispatcher={this.props.dispatcher}
@@ -1576,6 +1648,7 @@ export class App extends React.Component<IAppProps, IAppState> {
 
         return (
           <AbortMergeWarning
+            key="abort-merge-warning"
             dispatcher={this.props.dispatcher}
             repository={popup.repository}
             onDismissed={this.onPopupDismissed}
@@ -1587,6 +1660,7 @@ export class App extends React.Component<IAppProps, IAppState> {
       case PopupType.UsageReportingChanges:
         return (
           <UsageStatsChange
+            key="usage-stats-change"
             onOpenUsageDataUrl={this.openUsageDataUrl}
             onDismissed={this.onUsageReportingDismissed}
           />
@@ -1594,6 +1668,7 @@ export class App extends React.Component<IAppProps, IAppState> {
       case PopupType.CommitConflictsWarning:
         return (
           <CommitConflictsWarning
+            key="commit-conflicts-warning"
             dispatcher={this.props.dispatcher}
             files={popup.files}
             repository={popup.repository}
@@ -1604,6 +1679,7 @@ export class App extends React.Component<IAppProps, IAppState> {
       case PopupType.PushNeedsPull:
         return (
           <PushNeedsPullWarning
+            key="push-needs-pull"
             dispatcher={this.props.dispatcher}
             repository={popup.repository}
             onDismissed={this.onPopupDismissed}
@@ -1639,6 +1715,7 @@ export class App extends React.Component<IAppProps, IAppState> {
 
         return (
           <RebaseFlow
+            key="rebase-flow"
             repository={popup.repository}
             openFileInExternalEditor={this.openFileInExternalEditor}
             dispatcher={this.props.dispatcher}
@@ -1662,6 +1739,7 @@ export class App extends React.Component<IAppProps, IAppState> {
 
         return (
           <ConfirmForcePush
+            key="confirm-force-push"
             dispatcher={this.props.dispatcher}
             repository={popup.repository}
             upstreamBranch={popup.upstreamBranch}
@@ -1687,6 +1765,7 @@ export class App extends React.Component<IAppProps, IAppState> {
 
         return (
           <StashAndSwitchBranch
+            key="stash-and-switch-branch"
             dispatcher={this.props.dispatcher}
             repository={popup.repository}
             currentBranch={currentBranch}
@@ -1700,6 +1779,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         const { repository, branchToCheckout: branchToCheckout } = popup
         return (
           <OverwriteStash
+            key="overwite-stash"
             dispatcher={this.props.dispatcher}
             repository={repository}
             branchToCheckout={branchToCheckout}
@@ -1712,6 +1792,7 @@ export class App extends React.Component<IAppProps, IAppState> {
 
         return (
           <ConfirmDiscardStashDialog
+            key="confirm-discard-stash-dialog"
             dispatcher={this.props.dispatcher}
             repository={repository}
             stash={stash}
@@ -1719,9 +1800,37 @@ export class App extends React.Component<IAppProps, IAppState> {
           />
         )
       }
+      case PopupType.CreateTutorialRepository: {
+        return (
+          <CreateTutorialRepositoryDialog
+            key="create-tutorial-repository-dialog"
+            account={popup.account}
+            onDismissed={this.onPopupDismissed}
+            onTutorialRepositoryCreated={this.onTutorialRepositoryCreated}
+            onError={this.onTutorialRepositoryError}
+          />
+        )
+      }
       default:
         return assertNever(popup, `Unknown popup type: ${popup}`)
     }
+  }
+
+  private onTutorialRepositoryError = (error: Error) => {
+    this.props.dispatcher.closePopup(PopupType.CreateTutorialRepository)
+    this.props.dispatcher.postError(error)
+  }
+
+  private onTutorialRepositoryCreated = (
+    path: string,
+    account: Account,
+    apiRepository: IAPIRepository
+  ) => {
+    this.props.dispatcher.addTutorialRepository(
+      path,
+      account.endpoint,
+      apiRepository
+    )
   }
 
   private onShowRebaseConflictsBanner = (
@@ -2122,8 +2231,14 @@ export class App extends React.Component<IAppProps, IAppState> {
     }
 
     const currentFoldout = this.state.currentFoldout
-    const isOpen =
-      !!currentFoldout && currentFoldout.type === FoldoutType.Branch
+
+    let isOpen = false
+    let handleProtectedBranchWarning: boolean | undefined
+
+    if (currentFoldout !== null && currentFoldout.type === FoldoutType.Branch) {
+      isOpen = true
+      handleProtectedBranchWarning = currentFoldout.handleProtectedBranchWarning
+    }
 
     const repository = selection.repository
     const branchesState = selection.state.branchesState
@@ -2139,6 +2254,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         pullRequests={branchesState.openPullRequests}
         currentPullRequest={branchesState.currentPullRequest}
         isLoadingPullRequests={branchesState.isLoadingPullRequests}
+        handleProtectedBranchWarning={handleProtectedBranchWarning}
       />
     )
   }
@@ -2222,6 +2338,7 @@ export class App extends React.Component<IAppProps, IAppState> {
           onCreate={this.showCreateRepository}
           onClone={this.showCloneRepo}
           onAdd={this.showAddLocalRepo}
+          onCreateTutorialRepository={this.onCreateTutorialRepository}
           apiRepositories={this.state.apiRepositories}
           onRefreshRepositories={this.onRefreshRepositories}
         />
@@ -2249,6 +2366,7 @@ export class App extends React.Component<IAppProps, IAppState> {
           gitHubUserStore={this.props.gitHubUserStore}
           onViewCommitOnGitHub={this.onViewCommitOnGitHub}
           imageDiffType={state.imageDiffType}
+          hideWhitespaceInDiff={state.hideWhitespaceInDiff}
           focusCommitMessage={state.focusCommitMessage}
           askForConfirmationOnDiscardChanges={
             state.askForConfirmationOnDiscardChanges
@@ -2282,7 +2400,8 @@ export class App extends React.Component<IAppProps, IAppState> {
     return (
       <Welcome
         dispatcher={this.props.dispatcher}
-        appStore={this.props.appStore}
+        optOut={this.state.optOutOfUsageTracking}
+        accounts={this.state.accounts}
         signInState={this.state.signInState}
       />
     )

@@ -2,7 +2,7 @@ import { remote } from 'electron'
 import { Disposable, IDisposable } from 'event-kit'
 import * as Path from 'path'
 
-import { IAPIOrganization, IAPIRefStatus } from '../../lib/api'
+import { IAPIOrganization, IAPIRefStatus, IAPIRepository } from '../../lib/api'
 import { shell } from '../../lib/app-shell'
 import {
   CompareAction,
@@ -24,6 +24,7 @@ import {
   RebaseResult,
   PushOptions,
   getCommitsInRange,
+  getBranches,
 } from '../../lib/git'
 import { isGitOnPath } from '../../lib/is-git-on-path'
 import {
@@ -123,6 +124,25 @@ export class Dispatcher {
     paths: ReadonlyArray<string>
   ): Promise<ReadonlyArray<Repository>> {
     return this.appStore._addRepositories(paths)
+  }
+
+  /**
+   * Add a tutorial repository.
+   *
+   * This method differs from the `addRepositories` method in that it
+   * requires that the repository has been created on the remote and
+   * set up to track it. Given that tutorial repositories are created
+   * from the no-repositories blank slate it shouldn't be possible for
+   * another repository with the same path to exist but in case that
+   * changes in the future this method will set the tutorial flag on
+   * the existing repository at the given path.
+   */
+  public addTutorialRepository(
+    path: string,
+    endpoint: string,
+    apiRepository: IAPIRepository
+  ) {
+    return this.appStore._addTutorialRepository(path, endpoint, apiRepository)
   }
 
   /** Remove the repositories represented by the given IDs from local storage. */
@@ -313,9 +333,39 @@ export class Dispatcher {
     return this.appStore._closeCurrentFoldout()
   }
 
-  /** Close the specified foldout. */
+  /** Close the specified foldout */
   public closeFoldout(foldout: FoldoutType): Promise<void> {
     return this.appStore._closeFoldout(foldout)
+  }
+
+  /** Check for remote commits that could affect the rebase operation */
+  private async warnAboutRemoteCommits(
+    repository: Repository,
+    baseBranch: Branch,
+    targetBranch: Branch
+  ): Promise<boolean> {
+    if (targetBranch.upstream === null) {
+      return false
+    }
+
+    // if the branch is tracking a remote branch
+    const upstreamBranchesMatching = await getBranches(
+      repository,
+      `refs/remotes/${targetBranch.upstream}`
+    )
+
+    if (upstreamBranchesMatching.length === 0) {
+      return false
+    }
+
+    // and the remote branch has commits that don't exist on the base branch
+    const remoteCommits = await getCommitsInRange(
+      repository,
+      baseBranch.tip.sha,
+      targetBranch.upstream
+    )
+
+    return remoteCommits !== null && remoteCommits.length > 0
   }
 
   /** Initialize and start the rebase operation */
@@ -332,24 +382,20 @@ export class Dispatcher {
       options !== undefined && options.continueWithForcePush
 
     if (askForConfirmationOnForcePush && !hasOverridenForcePushCheck) {
-      // if the branch is tracking a remote branch
-      if (targetBranch.upstream !== null) {
-        // and the remote branch has commits that don't exist on the base branch
-        const remoteCommits = await getCommitsInRange(
-          repository,
-          baseBranch.tip.sha,
-          targetBranch.upstream
-        )
+      const showWarning = await this.warnAboutRemoteCommits(
+        repository,
+        baseBranch,
+        targetBranch
+      )
 
-        if (remoteCommits.length > 0) {
-          this.setRebaseFlowStep(repository, {
-            kind: RebaseStep.WarnForcePush,
-            baseBranch,
-            targetBranch,
-            commits,
-          })
-          return
-        }
+      if (showWarning) {
+        this.setRebaseFlowStep(repository, {
+          kind: RebaseStep.WarnForcePush,
+          baseBranch,
+          targetBranch,
+          commits,
+        })
+        return
       }
     }
 
@@ -907,6 +953,8 @@ export class Dispatcher {
         return
       }
 
+      this.statsStore.recordRebaseSuccessWithoutConflicts()
+
       await this.completeRebase(
         repository,
         {
@@ -1002,6 +1050,8 @@ export class Dispatcher {
         )
         return
       }
+
+      this.statsStore.recordRebaseSuccessAfterConflicts()
 
       await this.completeRebase(
         repository,
@@ -1295,7 +1345,8 @@ export class Dispatcher {
    * Update the location of an existing repository and clear the missing flag.
    */
   public async relocateRepository(repository: Repository): Promise<void> {
-    const directories = remote.dialog.showOpenDialog({
+    const window = remote.getCurrentWindow()
+    const directories = remote.dialog.showOpenDialog(window, {
       properties: ['openDirectory'],
     })
 
@@ -1591,6 +1642,19 @@ export class Dispatcher {
   /** Change the selected image diff type. */
   public changeImageDiffType(type: ImageDiffType): Promise<void> {
     return this.appStore._changeImageDiffType(type)
+  }
+
+  /** Change the hide whitespace in diff setting */
+  public onHideWhitespaceInDiffChanged(
+    hideWhitespaceInDiff: boolean,
+    repository: Repository,
+    file: CommittedFileChange | null = null
+  ): Promise<void> {
+    return this.appStore._setHideWhitespaceInDiff(
+      hideWhitespaceInDiff,
+      repository,
+      file
+    )
   }
 
   /** Install the global Git LFS filters. */
@@ -2032,6 +2096,62 @@ export class Dispatcher {
   }
 
   /**
+   * Increment the number of times the user has opened their external editor
+   * from the suggested next steps view
+   */
+  public recordSuggestedStepOpenInExternalEditor(): Promise<void> {
+    return this.statsStore.recordSuggestedStepOpenInExternalEditor()
+  }
+
+  /**
+   * Increment the number of times the user has opened their repository in
+   * Finder/Explorerfrom the suggested next steps view
+   */
+  public recordSuggestedStepOpenWorkingDirectory(): Promise<void> {
+    return this.statsStore.recordSuggestedStepOpenWorkingDirectory()
+  }
+
+  /**
+   * Increment the number of times the user has opened their repository on
+   * GitHub from the suggested next steps view
+   */
+  public recordSuggestedStepViewOnGitHub(): Promise<void> {
+    return this.statsStore.recordSuggestedStepViewOnGitHub()
+  }
+
+  /**
+   * Increment the number of times the user has used the publish repository
+   * action from the suggested next steps view
+   */
+  public recordSuggestedStepPublishRepository(): Promise<void> {
+    return this.statsStore.recordSuggestedStepPublishRepository()
+  }
+
+  /**
+   * Increment the number of times the user has used the publish branch
+   * action branch from the suggested next steps view
+   */
+  public recordSuggestedStepPublishBranch(): Promise<void> {
+    return this.statsStore.recordSuggestedStepPublishBranch()
+  }
+
+  /**
+   * Increment the number of times the user has used the Create PR suggestion
+   * in the suggested next steps view.
+   */
+  public recordSuggestedStepCreatePullRequest(): Promise<void> {
+    return this.statsStore.recordSuggestedStepCreatePullRequest()
+  }
+
+  /**
+   * Increment the number of times the user has used the View Stash suggestion
+   * in the suggested next steps view.
+   */
+  public recordSuggestedStepViewStash(): Promise<void> {
+    return this.statsStore.recordSuggestedStepViewStash()
+  }
+
+  /**
    * Moves unconmitted changes to the branch being checked out
    */
   public async moveChangesToBranchAndCheckout(
@@ -2042,5 +2162,15 @@ export class Dispatcher {
       repository,
       branchToCheckout
     )
+  }
+
+  /** Record when the user takes no action on the stash entry */
+  public recordNoActionTakenOnStash(): Promise<void> {
+    return this.statsStore.recordNoActionTakenOnStash()
+  }
+
+  /** Record when the user views the stash entry */
+  public recordStashView(): Promise<void> {
+    return this.statsStore.recordStashView()
   }
 }
